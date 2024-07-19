@@ -1,183 +1,143 @@
 import express from "express";
 import { prisma } from "../prisma/prisma-instance";
-import { errorHandleMiddleware } from "./error-handler";
+import {
+  errorHandleMiddleware,
+  validateRequestId,
+} from "./error-handler";
+import HttpStatusCode from "./status-codes";
 import "express-async-errors";
 
 const app = express();
 app.use(express.json());
 // All code should go below this line
 
+const { OK, BAD_REQUEST } = HttpStatusCode;
+
 app.get("/", (_req, res) => {
-  res.json({ message: "Hello World!" }).status(200); // the 'status' is unnecessary but wanted to show you how to define a status
+  res.json({ message: "Hello World!" }).status(OK); // the 'status' is unnecessary but wanted to show you how to define a status
 });
 
 app.get("/dogs", async (_req, res) => {
   const dogs = await prisma.dog.findMany();
-  res.send(dogs);
+  return res.send(dogs);
 });
 
-app.get("/dogs/:id", async (req, res) => {
-  const id = +req.params.id;
-  if (isNaN(+req.params.id)) {
-    return res.status(400).send({
-      message: "id should be a number",
+app.get(
+  "/dogs/:id",
+  validateRequestId,
+  async (req, res) => {
+    const dog = await prisma.dog.findUnique({
+      where: { id: +req.params.id },
     });
+    return !dog ? res.status(204).send() : res.send(dog);
   }
+);
 
-  const dog = await prisma.dog.findUnique({
-    where: { id },
-  });
-
-  if (!dog) return res.status(204).send();
-
-  return res.send(dog);
-});
-
-app.delete("/dogs/:id", async (req, res) => {
-  const id = +req.params.id;
-  if (isNaN(+req.params.id)) {
-    return res
-      .status(400)
-      .send({ message: "id should be a number" });
-  }
-  try {
-    const dog = await prisma.dog.delete({
-      where: { id },
-    });
-    return res.status(200).send(dog);
-  } catch (e) {
-    console.error(e);
-    return res.status(204).send();
-  }
-});
+app.delete("/dogs/:id", validateRequestId, (req, res) =>
+  prisma.dog
+    .delete({
+      where: { id: +req.params.id },
+    })
+    .then((deletedDogData) =>
+      res.status(200).send(deletedDogData)
+    )
+    .catch(() => res.status(204).send())
+);
 
 app.post("/dogs", async (req, res) => {
   const { age, name, description, breed, ...invalidKeys } =
     req.body;
+
   const errors: string[] = [];
 
-  if (typeof name !== "string") {
-    errors.push("name should be a string");
-  }
-  if (typeof description !== "string") {
-    errors.push("description should be a string");
-  }
-  if (typeof breed !== "string") {
-    errors.push("breed should be a string");
-  }
-  if (typeof age !== "number") {
-    errors.push("age should be a number");
+  const requiredTypes = [
+    { name: "name", value: name, type: "string" },
+    {
+      name: "description",
+      value: description,
+      type: "string",
+    },
+    { name: "breed", value: breed, type: "string" },
+    { name: "age", value: age, type: "number" },
+  ];
+
+  for (const keys of requiredTypes) {
+    if (typeof keys.value !== keys.type) {
+      errors.push(`${keys.name} should be a ${keys.type}`);
+    }
   }
 
   for (const key of Object.keys(invalidKeys)) {
     errors.push(`'${key}' is not a valid key`);
   }
 
-  if (errors.length > 0) {
-    return res.status(400).json({ errors });
+  if (errors.length) {
+    return res.status(BAD_REQUEST).json({ errors });
   }
-
-  try {
-    const newDog = await prisma.dog.create({
-      data: { age, name, description, breed },
-    });
-    res.status(201).send(newDog);
-  } catch (e) {
-    console.error(e);
-    res.status(500).send({
-      error: "An error occurred while creating the dog",
-    });
-  }
+  return prisma.dog
+    .create({ data: { age, name, description, breed } })
+    .then((newDog) => res.status(201).send(newDog))
+    .catch(() => res.status(500).send());
 });
 
-app.patch("/dogs/:id", async (req, res) => {
-  const id = +req.params.id;
-  const { age, name, description, breed, ...invalidKeys } =
-    req.body;
-  let dogToUpdate: {
-    age?: number;
-    name?: string;
-    description?: string;
-    breed?: string;
-  } = {};
-
-  app.get(`/dogs/${id}`, async (_req, res) => {
-    if (isNaN(id)) {
-      return res.status(400).send({
-        message: "id should be a number",
-      });
-    }
-
-    const dog = await prisma.dog.findUnique({
-      where: { id },
-    });
-
-    if (!dog) return res.status(204).send();
-
-    dogToUpdate = dog;
-  });
-  const errors: string[] = [];
-
-  if (age !== undefined) {
-    if (typeof age !== "number") {
-      errors.push("age should be a number");
-    } else {
-      dogToUpdate.age = age;
-    }
-  }
-  if (name !== undefined) {
-    if (typeof name !== "string") {
-      errors.push("name should be a string");
-    } else {
-      dogToUpdate.name = name;
-    }
-  }
-  if (description !== undefined) {
-    if (typeof description !== "string") {
-      errors.push("description should be a string");
-    } else {
-      dogToUpdate.description = description;
-    }
-  }
-  if (breed !== undefined) {
-    if (typeof breed !== "string") {
-      errors.push("breed should be a string");
-    } else {
-      dogToUpdate.breed = breed;
-    }
-  }
-
-  for (const key of Object.keys(invalidKeys)) {
-    errors.push(`'${key}' is not a valid key`);
-  }
-
-  if (errors.length > 0) {
-    return res.status(400).json({ errors });
-  }
-
-  const data = {
-    ...dogToUpdate,
-    ...invalidKeys,
-  };
-
-  try {
-    const updatedDog = await prisma.dog.update({
-      where: { id },
-      data: {
-        age: data.age,
-        name: data.name,
-        description: data.description,
-        breed: data.breed,
+app.patch(
+  "/dogs/:id",
+  validateRequestId,
+  async (req, res) => {
+    const {
+      age,
+      name,
+      description,
+      breed,
+      ...invalidKeys
+    } = req.body;
+    const dogToUpdate = {} as Record<string, unknown>;
+    const errors: string[] = [];
+    const requiredTypes = [
+      { name: "name", value: name, type: "string" },
+      {
+        name: "description",
+        value: description,
+        type: "string",
       },
-    });
-    res.status(201).json(updatedDog);
-  } catch (e) {
-    console.error(e);
-    res.status(500).json({
-      error: "An error occurred while updating the dog",
-    });
+      { name: "breed", value: breed, type: "string" },
+      { name: "age", value: age, type: "number" },
+    ];
+
+    for (const keys of requiredTypes) {
+      if (keys.value !== undefined) {
+        if (typeof keys.value !== keys.type) {
+          errors.push(
+            `${keys.name} should be a ${keys.type}`
+          );
+        } else {
+          dogToUpdate[keys.name] = keys.value;
+        }
+      }
+    }
+
+    for (const key of Object.keys(invalidKeys)) {
+      errors.push(`'${key}' is not a valid key`);
+    }
+
+    if (errors.length) {
+      return res.status(BAD_REQUEST).json({ errors });
+    }
+    return prisma.dog
+      .update({
+        where: { id: +req.params.id },
+        data: { ...dogToUpdate },
+      })
+      .then((updatedDog) =>
+        res.status(201).json(updatedDog)
+      )
+      .catch(() =>
+        res.status(500).json({
+          error: "An error occurred while updating the dog",
+        })
+      );
   }
-});
+);
 
 // all your code should go above this line
 app.use(errorHandleMiddleware);
